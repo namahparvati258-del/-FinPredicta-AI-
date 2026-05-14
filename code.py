@@ -1,0 +1,130 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import datetime
+import plotly.graph_objects as go
+import numpy as np
+
+# Page Setup
+st.set_page_config(page_title="FinPredicta AI", layout="wide")
+st.title("📈 FinPredicta: AI-Powered Investment Advisor")
+
+# --- STEP 1: DATE SELECTION ---
+st.subheader("Step 1: Select Time Period")
+col_d1, col_d2 = st.columns(2)
+with col_d1:
+    start_date = st.date_input("Start Date", 
+                              value=datetime.date.today() - datetime.timedelta(days=365),
+                              min_value=datetime.date(2000, 1, 1))
+with col_d2:
+    end_date = st.date_input("End Date", value=datetime.date.today())
+
+# --- STEP 2: ASSET SELECTION ---
+st.subheader("Step 2: Choose Asset")
+search_mode = st.radio("Search Preference:", ["Sector Comparison", "Single Asset Search"], horizontal=True)
+
+sectors = {
+    "Petroleum & Energy": ["RELIANCE.NS", "ONGC.NS", "BPCL.NS", "XOM"],
+    "Banking & Finance": ["HDFCBANK.NS", "ICICIBANK.NS", "SBI.NS", "JPM"],
+    "IT & Technology": ["TCS.NS", "INFY.NS", "AAPL", "GOOGL", "NVDA"],
+    "Cryptocurrency": ["BTC-USD", "ETH-USD", "SOL-USD"],
+    "Automobile": ["TATAMOTORS.NS", "M&M.NS", "F", "TM"]
+}
+
+if search_mode == "Single Asset Search":
+    ticker_symbol = st.text_input("Enter Company Symbol:", "RELIANCE.NS")
+    search_list = [ticker_symbol.upper()]
+else:
+    selected_sector = st.selectbox("Select a Sector:", list(sectors.keys()))
+    search_list = sectors[selected_sector]
+
+# --- STEP 3: INVESTMENT (INR ONLY) ---
+st.subheader("Step 3: Investment Amount (in ₹)")
+invest_input = st.text_input("How many Rupees (₹) do you want to invest?", "1000")
+try:
+    investment_inr = float(invest_input)
+except:
+    investment_inr = 0
+
+# Exchange Rate (Approx)
+USD_INR_RATE = 83.5 
+
+# --- ANALYSIS ---
+if st.button("Calculate Growth"):
+    if start_date >= end_date:
+        st.error("Error: Start Date must be before End Date.")
+    elif investment_inr <= 0:
+        st.error("Please enter a valid amount.")
+    else:
+        results = []
+        with st.spinner('Analyzing market data...'):
+            for sym in search_list:
+                data = yf.download(sym, start=start_date, end=end_date, auto_adjust=True)
+                
+                if not data.empty and len(data) > 1:
+                    close_prices = data['Close'].values.flatten()
+                    s_price = float(close_prices[0])
+                    e_price = float(close_prices[-1])
+                    growth = ((e_price - s_price) / s_price) * 100
+                    
+                    is_indian = sym.endswith(".NS")
+                    currency_symbol = "₹" if is_indian else "$"
+                    
+                    results.append({
+                        "Asset": sym, 
+                        "Growth (%)": round(growth, 2), 
+                        "Price at Start": f"{currency_symbol}{round(s_price, 2)}",
+                        "Price at End": f"{currency_symbol}{round(e_price, 2)}",
+                        "Is Indian": is_indian
+                    })
+
+        if results:
+            df = pd.DataFrame(results).sort_values(by="Growth (%)", ascending=False)
+            top_asset = df.iloc[0]
+            
+            # --- CONVERSION LOGIC ---
+            if top_asset['Is Indian']:
+                final_val = investment_inr * (1 + float(top_asset['Growth (%)'])/100)
+                display_currency = "₹"
+            else:
+                investment_usd = investment_inr / USD_INR_RATE
+                final_val_usd = investment_usd * (1 + float(top_asset['Growth (%)'])/100)
+                final_val = final_val_usd 
+                display_currency = "$"
+
+            # Condition for Success/Error box color based on profit/loss
+            if top_asset['Growth (%)'] >= 0:
+                st.success(f"Best Performer: {top_asset['Asset']}")
+            else:
+                st.error(f"Best Performer (Even with Loss): {top_asset['Asset']}")
+
+            st.metric(f"Your ₹{investment_inr} would become:", 
+                      f"{display_currency}{final_val:,.2f}", 
+                      f"{top_asset['Growth (%)']}%")
+            
+            if not top_asset['Is Indian']:
+                st.info(f"Note: Your ₹{investment_inr} was converted to ${(investment_inr/USD_INR_RATE):.2f} for US Market analysis.")
+
+            col_left, col_right = st.columns([1, 2])
+            with col_left:
+                st.write("### Comparison Table")
+                st.dataframe(df.drop(columns=['Is Indian']), use_container_width=True, hide_index=True)
+            
+            with col_right:
+                plot_data = yf.download(top_asset['Asset'], start=start_date, end=end_date, auto_adjust=True)
+                if not plot_data.empty:
+                    
+                    # --- DYNAMIC COLOR LOGIC ---
+                    # Agar growth negative hai toh Red (#ff3860), warna Teal (#00d1b2)
+                    line_color = '#ff3860' if top_asset['Growth (%)'] < 0 else '#00d1b2'
+
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=plot_data.index, y=plot_data['Close'].values.flatten(), 
+                                             mode='lines', line=dict(color=line_color, width=3)))
+                    fig.update_layout(template="plotly_dark", 
+                                      title=f"Price Trend: {top_asset['Asset']} ({display_currency})",
+                                      xaxis_title="Date",
+                                      yaxis_title="Price")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No data found for the selected period.")
